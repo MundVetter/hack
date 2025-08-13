@@ -182,7 +182,7 @@ def train(job_id: str, prompt: str) -> Dict[str, Any]:
     write_status("running")
 
     # Plan with GPT-5
-    plan = generate_plan.call(prompt)
+    plan = generate_plan.remote(prompt)
 
     dataset_name = plan.get("dataset", {}).get("name", "mnist")
     input_shape = plan.get("input", {}).get("shape", [1, 28, 28])
@@ -346,5 +346,5 @@ def predict(request: Dict[str, Any]):
         return {"error": "Missing slug"}, 400
     if pixels is None:
         return {"error": "Missing pixels"}, 400
-    out = predict_internal.call(slug, pixels)
+    out = predict_internal.remote(slug, pixels)
     return out
