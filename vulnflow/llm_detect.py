@@ -98,3 +98,41 @@ def detect_vulnerabilities_with_openai(
             except Exception:
                 continue
     return findings
+
+
+def validate_issue_with_openai(issue: Dict[str, Any], api_key: Optional[str] = None, model: str = "gpt-4o-mini") -> bool:
+    """Return True if LLM agrees this is an actual vulnerability (not just potential)."""
+    system = {
+        "role": "system",
+        "content": (
+            "You are validating static analysis findings. Decide if the given issue is a REAL vulnerability in context. "
+            "Answer strictly with JSON: {\"actual\": true|false}. Consider taint source reaching sensitive sink and whether mitigations exist (e.g., parameterized queries)."
+        ),
+    }
+    user = {
+        "role": "user",
+        "content": json.dumps({
+            "file": issue.get("file"),
+            "line": issue.get("line"),
+            "kind": issue.get("kind"),
+            "message": issue.get("message"),
+            "code": issue.get("code"),
+        }, indent=2),
+    }
+    content = _call_openai([system, user], api_key, model)
+    if not content:
+        return False
+    try:
+        data = json.loads(content)
+        return bool(data.get("actual") is True)
+    except Exception:
+        # best-effort parse
+        try:
+            start = content.find("{")
+            end = content.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                data = json.loads(content[start : end + 1])
+                return bool(data.get("actual") is True)
+        except Exception:
+            return False
+    return False

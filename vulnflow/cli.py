@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -16,9 +17,15 @@ from rich.panel import Panel
 from .analyzer import AnalysisResult, analyze_path
 from .graph import write_graph
 from .utils import cleanup_dir, clone_repo_shallow
-from .llm_detect import detect_vulnerabilities_with_openai
+from .llm_detect import detect_vulnerabilities_with_openai, validate_issue_with_openai
 
 app = typer.Typer(add_completion=False, help="Build dataflow graph and flag potential vulnerabilities in a codebase")
+
+# Simple secret regexes (add/adjust as needed)
+SECRET_PATTERNS = [
+    ("secret", re.compile(r"(?i)(api[_-]?key|secret|token|password)\s*[:=]\s*['\"]([A-Za-z0-9_\-]{12,})['\"]")),
+    ("secret", re.compile(r"(?i)sk-[A-Za-z0-9]{20,}")),  # OpenAI-style
+]
 
 
 def _explain_with_openai(findings_json: str, api_key: Optional[str]) -> Optional[str]:
@@ -61,8 +68,10 @@ def analyze(
     use_modal: bool = typer.Option(False, "--modal", help="Run analysis remotely on Modal"),
     openai_detect: bool = typer.Option(False, help="Use OpenAI to do an additional pass to detect vulnerabilities"),
     show_graph: bool = typer.Option(False, help="Render a compact ASCII view of the graph in the terminal"),
+    include_potential: bool = typer.Option(False, help="Include potential issues (without LLM validation)", show_default=False),
+    openai_validate: bool = typer.Option(True, help="Validate potential issues with OpenAI to keep only actual vulns"),
 ):
-    """Analyze a codebase, build a dataflow graph, and report potential vulnerabilities."""
+    """Analyze a codebase, build a dataflow graph, and report actual vulnerabilities by default."""
     if not path and not repo:
         rprint("[bold red]Error:[/] Provide --path or --repo")
         raise typer.Exit(code=2)
@@ -114,6 +123,7 @@ def analyze(
         except Exception as e:
             rprint(f"[bold red]Graph export failed:[/] {e}")
 
+    # Start with static findings
     findings = [
         {
             "kind": f.kind,
@@ -121,22 +131,44 @@ def analyze(
             "line": f.line,
             "message": f.message,
             "code": f.code,
+            "potential": f.potential,
         }
         for f in result.findings
     ]
 
+    # Include simple secret scanning
+    secret_findings = _scan_secrets(target)
+    findings.extend(secret_findings)
+
+    # Optionally add LLM-detected additional issues (potential by nature)
     if openai_detect:
         llm_findings = detect_vulnerabilities_with_openai(target, api_key=openai_api_key)
-        if llm_findings:
-            rprint("[yellow]OpenAI additional findings added.[/]")
-            findings.extend(llm_findings)
+        for f in llm_findings:
+            f["potential"] = True
+        findings.extend(llm_findings)
+
+    # Validate potential issues unless user wants to include all potential
+    if not include_potential and openai_validate:
+        validated: list[dict] = []
+        for f in findings:
+            if not f.get("potential"):
+                validated.append(f)
+                continue
+            ok = validate_issue_with_openai(f, api_key=openai_api_key)
+            if ok:
+                f["potential"] = False
+                validated.append(f)
+        findings = validated
+    elif not include_potential and not openai_validate:
+        # Keep only non-potential (there may be none if not validated)
+        findings = [f for f in findings if not f.get("potential")]
 
     _print_findings(findings, json_print, json_out)
 
     if show_graph:
         _print_ascii_graph(result)
 
-    if openai_explain:
+    if openai_explain and findings:
         msg = _explain_with_openai(json.dumps(findings, indent=2), openai_api_key)
         if msg:
             rprint("\n[bold]LLM summary:[/]")
@@ -146,6 +178,30 @@ def analyze(
         cleanup_dir(tmp_dir)
 
 
+def _scan_secrets(root: str) -> list[dict]:
+    out: list[dict] = []
+    for p in Path(root).rglob("*.py"):
+        try:
+            text = p.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        for kind, regex in SECRET_PATTERNS:
+            for m in regex.finditer(text):
+                line_num = text.count("\n", 0, m.start()) + 1
+                snippet = text.splitlines()[line_num - 1 : line_num + 1]
+                out.append(
+                    {
+                        "kind": kind,
+                        "file": str(p),
+                        "line": line_num,
+                        "message": "Hard-coded secret candidate",
+                        "code": "\n".join(snippet),
+                        "potential": True,
+                    }
+                )
+    return out
+
+
 def _print_findings(findings: list[dict], json_print: bool, json_out: Optional[str]):
     if json_out:
         Path(json_out).write_text(json.dumps(findings, indent=2))
@@ -153,14 +209,15 @@ def _print_findings(findings: list[dict], json_print: bool, json_out: Optional[s
     if json_print or not findings:
         rprint(json.dumps(findings, indent=2))
         return
-    table = Table(title="Potential vulnerabilities")
+    table = Table(title="Findings (actual by default)")
     table.add_column("Kind", style="cyan")
+    table.add_column("Potential", style="yellow")
     table.add_column("Location", style="magenta")
     table.add_column("Message", style="white")
     for f in findings:
         loc = f"{f['file']}:{f['line']}"
         msg = (f.get("message") or "").strip().splitlines()[0][:120]
-        table.add_row(f.get("kind", ""), loc, msg)
+        table.add_row(f.get("kind", ""), "yes" if f.get("potential") else "no", loc, msg)
     rprint(table)
 
 

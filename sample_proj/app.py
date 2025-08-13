@@ -17,4 +17,5 @@ def run_ok(conn, user_id):
 
 if __name__ == '__main__':
     conn = sqlite3.connect(':memory:')
+    OPENAI_API_KEY = 'sk-live-THIS_IS_FAKE_SAMPLE_KEY_abcdef0123456789'
     run_bad(conn, 1)

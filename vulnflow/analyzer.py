@@ -20,6 +20,7 @@ class Finding:
     message: str
     code: str
     path_nodes: List[str] = field(default_factory=list)
+    potential: bool = True
 
 
 @dataclass
@@ -123,6 +124,7 @@ class TaintTracker(ast.NodeVisitor):
                 message=detail or sink.description,
                 code=code,
                 path_nodes=[*origins, sink_id],
+                potential=True,
             )
         )
 
