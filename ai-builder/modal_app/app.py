@@ -49,8 +49,9 @@ ml_image = modal.Image.debian_slim().pip_install(["torch", "torchvision", "numpy
 @app.function(image=ml_image, volumes={MODELS_DIR: volume}, timeout=60 * 60, secrets=[openai_secret])
 def train(job_id: str, prompt: str) -> Dict[str, Any]:
     import openai
+    client = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
-    response = openai.chat.completions.create(
+    response = client.chat.completions.create(
         model="gpt-5",
         messages=[
             {
