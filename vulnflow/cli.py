@@ -10,10 +10,13 @@ from typing import Optional
 import typer
 from rich import print as rprint
 from rich.table import Table
+from rich.console import Console
+from rich.panel import Panel
 
 from .analyzer import AnalysisResult, analyze_path
 from .graph import write_graph
 from .utils import cleanup_dir, clone_repo_shallow
+from .llm_detect import detect_vulnerabilities_with_openai
 
 app = typer.Typer(add_completion=False, help="Build dataflow graph and flag potential vulnerabilities in a codebase")
 
@@ -56,6 +59,8 @@ def analyze(
     openai_explain: bool = typer.Option(False, help="Summarize findings with OpenAI if API key set"),
     openai_api_key: Optional[str] = typer.Option(None, envvar="OPENAI_API_KEY", help="OpenAI API key"),
     use_modal: bool = typer.Option(False, "--modal", help="Run analysis remotely on Modal"),
+    openai_detect: bool = typer.Option(False, help="Use OpenAI to do an additional pass to detect vulnerabilities"),
+    show_graph: bool = typer.Option(False, help="Render a compact ASCII view of the graph in the terminal"),
 ):
     """Analyze a codebase, build a dataflow graph, and report potential vulnerabilities."""
     if not path and not repo:
@@ -120,7 +125,16 @@ def analyze(
         for f in result.findings
     ]
 
+    if openai_detect:
+        llm_findings = detect_vulnerabilities_with_openai(target, api_key=openai_api_key)
+        if llm_findings:
+            rprint("[yellow]OpenAI additional findings added.[/]")
+            findings.extend(llm_findings)
+
     _print_findings(findings, json_print, json_out)
+
+    if show_graph:
+        _print_ascii_graph(result)
 
     if openai_explain:
         msg = _explain_with_openai(json.dumps(findings, indent=2), openai_api_key)
@@ -148,6 +162,39 @@ def _print_findings(findings: list[dict], json_print: bool, json_out: Optional[s
         msg = (f.get("message") or "").strip().splitlines()[0][:120]
         table.add_row(f.get("kind", ""), loc, msg)
     rprint(table)
+
+
+def _print_ascii_graph(result: AnalysisResult):
+    from collections import defaultdict
+
+    g = result.graph
+    by_kind = defaultdict(list)
+    for node_id, data in g.nodes(data=True):
+        by_kind[data.get("kind", "var")].append((node_id, data))
+
+    console = Console()
+    sections = []
+    for kind in ("source", "sink", "call", "var"):
+        nodes = by_kind.get(kind, [])
+        if not nodes:
+            continue
+        lines = []
+        for node_id, data in nodes[:50]:
+            label = data.get("label", node_id)
+            loc = f"{data.get('file','')}:{data.get('line','')}"
+            lines.append(f"- {label} ({loc})")
+        sections.append(Panel("\n".join(lines), title=f"{kind.upper()} ({len(nodes)})"))
+    if sections:
+        console.print(*sections)
+
+    # Show a few taint edges
+    edge_lines = []
+    for i, (u, v, ed) in enumerate(g.edges(data=True)):
+        if i >= 100:
+            break
+        edge_lines.append(f"{u} -> {v} [{ed.get('kind','')}]")
+    if edge_lines:
+        console.print(Panel("\n".join(edge_lines), title="EDGES (sample)"))
 
 
 def main():  # entry point
