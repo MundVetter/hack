@@ -304,7 +304,7 @@ def predict_internal(job_or_slug: str, pixels: Optional[list[float]] = None) -> 
     return {"label": str(label), "probs": probs}
 
 
-@app.function(image=image, secrets=[openai_secret])
+@app.function(image=image, volumes={MODELS_DIR: volume}, secrets=[openai_secret])
 @modal.web_endpoint(method="POST")
 def start(request: Dict[str, Any]):
     prompt = (request or {}).get("prompt", "")
