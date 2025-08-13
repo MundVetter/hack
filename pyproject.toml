@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vulnflow"
+version = "0.1.0"
+description = "CLI static analyzer that builds a dataflow graph from sources (user input) to sinks (LLM/DB) and flags potential vulnerabilities"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "VulnFlow" }]
+license = { file = "hack/LICENSE" }
+keywords = ["security", "static-analysis", "dataflow", "taint-analysis", "graph", "cli"]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: OS Independent",
+]
+dependencies = [
+  "typer>=0.12.3",
+  "rich>=13.7.1",
+  "networkx>=3.3",
+  "openai>=1.37.0",
+  "modal>=0.61.5",
+  "GitPython>=3.1.43",
+  "pydot>=2.0.0",
+]
+
+[project.scripts]
+vulnflow = "vulnflow.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["vulnflow*"]
+exclude = ["tests*"]
