@@ -312,11 +312,10 @@ def start(request: Dict[str, Any]):
         return {"error": "Missing prompt"}, 400
     job_id = _slugify(f"job-{int(time.time())}")
 
-    with volume.reload():
-        os.makedirs(f"{MODELS_DIR}/{job_id}", exist_ok=True)
-        with open(f"{MODELS_DIR}/{job_id}/status.json", "w") as f:
-            json.dump({"status": "queued", "jobId": job_id}, f)
-        volume.commit()
+    os.makedirs(f"{MODELS_DIR}/{job_id}", exist_ok=True)
+    with open(f"{MODELS_DIR}/{job_id}/status.json", "w") as f:
+        json.dump({"status": "queued", "jobId": job_id}, f)
+    volume.commit()
 
     train.spawn(job_id, prompt)
     return {"jobId": job_id}
