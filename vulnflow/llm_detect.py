@@ -30,7 +30,7 @@ def _call_openai(messages: list[dict], api_key: Optional[str], model: str) -> Op
 def detect_vulnerabilities_with_openai(
     root_path: str,
     api_key: Optional[str] = None,
-    model: str = "gpt-4o-mini",
+    model: str = "gpt-5",
     max_files: int = 100,
     max_chars_per_file: int = 12000,
 ) -> List[Dict[str, Any]]:
