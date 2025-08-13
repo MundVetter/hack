@@ -1,0 +1,27 @@
+<?xml version='1.0' encoding='utf-8'?>
+<graphml xmlns="http://graphml.graphdrawing.org/xmlns" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://graphml.graphdrawing.org/xmlns http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd">
+  <key id="d5" for="edge" attr.name="kind" attr.type="string" />
+  <key id="d4" for="node" attr.name="kind" attr.type="string" />
+  <key id="d3" for="node" attr.name="line" attr.type="long" />
+  <key id="d2" for="node" attr.name="file" attr.type="string" />
+  <key id="d1" for="node" attr.name="label" attr.type="string" />
+  <key id="d0" for="graph" attr.name="name" attr.type="string" />
+  <graph edgedefault="directed">
+    <node id="/workspace/sample_proj/app.py:7:http_request:source">
+      <data key="d1">HTTP user input via request.args.get</data>
+      <data key="d2">/workspace/sample_proj/app.py</data>
+      <data key="d3">7</data>
+      <data key="d4">source</data>
+    </node>
+    <node id="/workspace/sample_proj/app.py:11:sql:sink">
+      <data key="d1">Database execution via cur.execute</data>
+      <data key="d2">/workspace/sample_proj/app.py</data>
+      <data key="d3">11</data>
+      <data key="d4">sink</data>
+    </node>
+    <edge source="/workspace/sample_proj/app.py:7:http_request:source" target="/workspace/sample_proj/app.py:11:sql:sink">
+      <data key="d5">taint</data>
+    </edge>
+    <data key="d0">vulnflow</data>
+  </graph>
+</graphml>
