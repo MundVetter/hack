@@ -1,0 +1,28 @@
+{
+  "name": "ai-builder",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "lint": "next lint",
+    "modal:serve": "modal serve modal_app/app.py",
+    "modal:deploy": "modal deploy modal_app/app.py"
+  },
+  "dependencies": {
+    "ai": "^3.4.33",
+    "next": "14.2.5",
+    "openai": "^4.56.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.24",
+    "@types/react": "^18.2.56",
+    "@types/react-dom": "^18.2.19",
+    "eslint": "^8.57.0",
+    "eslint-config-next": "^14.2.5",
+    "typescript": "^5.5.4"
+  }
+}
