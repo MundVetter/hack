@@ -44,227 +44,56 @@ def _find_job_id_for_slug(slug: str) -> Optional[str]:
     return None
 
 
-# -------- Planning via OpenAI (GPT-5) --------
-@app.function(image=image, secrets=[openai_secret])
-def generate_plan(prompt: str) -> Dict[str, Any]:
-    """Ask GPT-5 to propose a dataset and a constrained architecture spec.
-    The response must be JSON with fields: dataset, input, model, train.
-    """
-    import os
-    from openai import OpenAI
+ml_image = modal.Image.debian_slim().pip_install(["torch", "torchvision", "numpy", "matplotlib", "seaborn", "transformers", "datasets", "scikit-learn", "pandas", "tqdm"])
 
-    client = OpenAI()
-    system = (
-        "You are an assistant that outputs STRICT JSON for ML project planning. "
-        "Return a compact JSON object with keys: dataset, input, model, train. "
-        "- dataset.name: one of ['mnist','fashion_mnist','cifar10']\n"
-        "- input.shape: [channels, height, width] (mnist= [1,28,28], cifar10=[3,32,32])\n"
-        "- model.layers: array of layers. Each layer is one of: \n"
-        "  {type:'conv', out_channels:int, kernel:int, stride:int, padding:int, activation:'relu'|'none'} |\n"
-        "  {type:'maxpool', kernel:int, stride:int} |\n"
-        "  {type:'dropout', p:float} |\n"
-        "  {type:'flatten'} |\n"
-        "  {type:'dense', out_features:int, activation:'relu'|'none'}\n"
-        "- train: {epochs:int<=5, batch_size:int<=128, lr:float<=0.01}\n"
-        "- num_classes: 10\n"
-        "Do not include any text besides the JSON."
-    )
-
-    user = f"Prompt: {prompt}"
-    resp = client.responses.create(
-        model="gpt-5",
-        input=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        temperature=0.2,
-    )
-    content = resp.output_text
-    try:
-        plan = json.loads(content)
-    except Exception:
-        # Fallback to MNIST minimal plan
-        plan = {
-            "dataset": {"name": "mnist"},
-            "input": {"shape": [1, 28, 28]},
-            "num_classes": 10,
-            "model": {"layers": [
-                {"type": "conv", "out_channels": 32, "kernel": 3, "stride": 1, "padding": 1, "activation": "relu"},
-                {"type": "maxpool", "kernel": 2, "stride": 2},
-                {"type": "conv", "out_channels": 64, "kernel": 3, "stride": 1, "padding": 1, "activation": "relu"},
-                {"type": "maxpool", "kernel": 2, "stride": 2},
-                {"type": "flatten"},
-                {"type": "dense", "out_features": 128, "activation": "relu"},
-            ]},
-            "train": {"epochs": 2, "batch_size": 64, "lr": 0.001}
-        }
-    return plan
-
-
-def _build_model_from_spec(spec: Dict[str, Any], in_ch: int, num_classes: int, image_hw: int) -> Any:
-    import torch
-    import torch.nn as nn
-
-    layers: List[nn.Module] = []
-    current_channels = in_ch
-    current_h = image_hw
-    current_w = image_hw
-
-    for layer in spec.get("model", {}).get("layers", []):
-        t = layer.get("type")
-        if t == "conv":
-            out_ch = int(layer.get("out_channels", 32))
-            k = int(layer.get("kernel", 3))
-            s = int(layer.get("stride", 1))
-            p = int(layer.get("padding", 1))
-            layers.append(nn.Conv2d(current_channels, out_ch, k, stride=s, padding=p))
-            if layer.get("activation", "relu") == "relu":
-                layers.append(nn.ReLU())
-            # update spatial dims
-            current_h = (current_h + 2 * p - k) // s + 1
-            current_w = (current_w + 2 * p - k) // s + 1
-            current_channels = out_ch
-        elif t == "maxpool":
-            k = int(layer.get("kernel", 2))
-            s = int(layer.get("stride", k))
-            layers.append(nn.MaxPool2d(k, stride=s))
-            current_h = (current_h - k) // s + 1
-            current_w = (current_w - k) // s + 1
-        elif t == "dropout":
-            p = float(layer.get("p", 0.5))
-            layers.append(nn.Dropout(p))
-        elif t == "flatten":
-            layers.append(nn.Flatten())
-        elif t == "dense":
-            # infer in_features if after flatten, else compute
-            if not isinstance(layers[-1], nn.Flatten):
-                layers.append(nn.Flatten())
-            in_features = current_channels * current_h * current_w
-            out_features = int(layer.get("out_features", 128))
-            layers.append(nn.Linear(in_features, out_features))
-            if layer.get("activation", "relu") == "relu":
-                layers.append(nn.ReLU())
-            # update feature dims
-            current_channels, current_h, current_w = 1, 1, out_features
-        else:
-            continue
-
-    # Final classifier layer
-    if not isinstance(layers[-1], nn.Flatten) and not isinstance(layers[-1], nn.Linear):
-        layers.append(nn.Flatten())
-    in_features = current_channels * max(current_h, 1) * max(current_w, 1)
-    layers.append(nn.Linear(in_features, num_classes))
-
-    return nn.Sequential(*layers)
-
-
-@app.function(image=image, volumes={MODELS_DIR: volume}, timeout=60 * 60, secrets=[openai_secret])
+@app.function(image=ml_image, volumes={MODELS_DIR: volume}, timeout=60 * 60, secrets=[openai_secret])
 def train(job_id: str, prompt: str) -> Dict[str, Any]:
-    import torch
-    import torch.nn as nn
-    import torch.optim as optim
-    from torch.utils.data import DataLoader
-    from torchvision import transforms
-    from datasets import load_dataset
+    import openai
 
-    os.makedirs(f"{MODELS_DIR}/{job_id}", exist_ok=True)
-    status_path = f"{MODELS_DIR}/{job_id}/status.json"
-    meta_path = f"{MODELS_DIR}/{job_id}/meta.json"
+    response = openai.chat.completions.create(
+        model="gpt-5",
+        messages=[
+            {
+                "role": "system",
+                "content": (
+                    "You are an expert machine learning engineer and scientist. "
+                    "Given a user prompt describing a machine learning problem, "
+                    "write Python code that creates a complete ML solution using only the following packages: "
+                    "PyTorch, torch.nn, torch.optim, torch.utils.data, numpy, matplotlib, seaborn, "
+                    "transformers, datasets, scikit-learn, pandas, tqdm, json, os, time, random, "
+                    "and built-in Python libraries. "
+                    "CUDA is available on device 'cuda:0' with an NVIDIA A100 GPU. "
+                    "The code should train a model to solve the user's problem, "
+                    f"save the trained model weights to {MODELS_DIR}/{job_id}/model.pt, "
+                    "PRINT THE RESULTS OF THE MODEL'S TEST PERFORMANCE TO STDOUT. "
+                    "The code should be executable from a main block and print the to stdout. "
+                    "Do not use any packages other except for standard Python libraries. "
+                    "Do not include explanations, only the code."
+                    "THE CODE SHOULD WORK WITHOUT MODIFICATIONS."
+                    "Include proper error handling, logging, and validation. "
+                    "Use best practices: set random seeds for reproducibility, implement early stopping, "
+                    "use learning rate scheduling, and include model checkpointing. "
+                    "Ensure the code handles both training and evaluation phases properly. "
+                    "The model should be saved in a way that it can be loaded and used for inference later."
+                    "OUTPUT ONLY THE CODE. DO NOT INCLUDE ANY EXPLANATIONS, COMMENTS, OR ANYTHING ELSE."
+                )
+            },
+            {"role": "user", "content": prompt}
+        ]
+    )
 
-    def write_status(state: str, extra: Optional[Dict[str, Any]] = None):
-        payload = {"status": state, "jobId": job_id}
-        if extra:
-            payload.update(extra)
-        with open(status_path, "w") as f:
-            json.dump(payload, f)
-        volume.commit()
+    with open(f"{MODELS_DIR}/{job_id}/code.py", "w") as f:
+        f.write(response.choices[0].message.content)
+    print("Code written to", f"{MODELS_DIR}/{job_id}/code.py")
 
-    write_status("running")
-
-    # Plan with GPT-5
-    plan = generate_plan.remote(prompt)
-
-    dataset_name = plan.get("dataset", {}).get("name", "mnist")
-    input_shape = plan.get("input", {}).get("shape", [1, 28, 28])
-    in_ch, H, W = int(input_shape[0]), int(input_shape[1]), int(input_shape[2])
-    num_classes = int(plan.get("num_classes", 10))
-    train_cfg = plan.get("train", {"epochs": 2, "batch_size": 64, "lr": 0.001})
-    epochs = min(int(train_cfg.get("epochs", 2)), 5)
-    batch_size = min(int(train_cfg.get("batch_size", 64)), 128)
-    lr = float(train_cfg.get("lr", 0.001))
-
-    slug = _slugify(f"{dataset_name}-classifier")
-
-    # Transforms: to tensor, resize if needed
-    tfs = [transforms.ToTensor()]
-    if H != 28 or W != 28:
-        tfs.insert(0, transforms.Resize((H, W)))
-    if in_ch == 1:
-        tfs.insert(0, transforms.Grayscale())
-    transform = transforms.Compose(tfs)
-
-    ds = load_dataset(dataset_name)
-
-    class TorchDS(torch.utils.data.Dataset):
-        def __init__(self, hf_split):
-            self.data = hf_split
-        def __len__(self):
-            return len(self.data)
-        def __getitem__(self, idx):
-            item = self.data[idx]
-            x = transform(item["image"])  # [C,H,W]
-            y = int(item["label"]) if "label" in item else int(item["labels"])  # some datasets
-            return x, y
-
-    train_ds = TorchDS(ds["train"])
-    test_ds = TorchDS(ds.get("test", ds["train"]))
-
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-    test_loader = DataLoader(test_ds, batch_size=256)
-
-    model = _build_model_from_spec(plan, in_ch, num_classes, H)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = model.to(device)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=lr)
-
-    for _ in range(epochs):
-        model.train()
-        for xb, yb in train_loader:
-            xb, yb = xb.to(device), yb.to(device)
-            optimizer.zero_grad()
-            logits = model(xb)
-            loss = criterion(logits, yb)
-            loss.backward()
-            optimizer.step()
-
-    # Evaluate
-    model.eval()
-    correct, total = 0, 0
-    with torch.no_grad():
-        for xb, yb in test_loader:
-            xb, yb = xb.to(device), yb.to(device)
-            logits = model(xb)
-            preds = logits.argmax(dim=1)
-            correct += (preds == yb).sum().item()
-            total += yb.size(0)
-    acc = correct / max(total, 1)
-
-    # Save artifacts and plan
-    torch.save(model.state_dict(), f"{MODELS_DIR}/{job_id}/model.pt")
-    with open(meta_path, "w") as f:
-        json.dump({
-            "jobId": job_id,
-            "slug": slug,
-            "dataset": dataset_name,
-            "input": {"shape": [in_ch, H, W]},
-            "num_classes": num_classes,
-            "plan": plan,
-            "metrics": {"accuracy": acc},
-        }, f)
-    write_status("completed", {"slug": slug})
-    return {"jobId": job_id, "slug": slug, "metrics": {"accuracy": acc}}
+    # now we execute the code in a sandboxed environment
+    sb = modal.Sandbox.create(app=app, image=ml_image, volumes={MODELS_DIR: volume}, gpu="A100")
+    p = sb.exec("python", f"{MODELS_DIR}/{job_id}/code.py")
+    for line in p.stdout:
+        print(line, end="")
+    sb.terminate()
+    
+    return {"status": "completed", "jobId": job_id}
 
 
 @app.function(image=image, volumes={MODELS_DIR: volume}, secrets=[openai_secret])
