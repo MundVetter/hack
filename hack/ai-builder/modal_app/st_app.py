@@ -132,14 +132,27 @@ else:
 		status_str = status_json.get("status", "unknown")
 		status_placeholder.write(f"**Status**: {status_str}")
 
-		# Code (if available)
+		# Code (if available) with expand/collapse
 		code_text = poll_text(job_id, "code.py")
-		code_shown_key = f"code_shown_{job_id}"
-		if code_text and not getattr(st.session_state, code_shown_key, False):
+		if code_text:
 			with col1:
-				st.markdown("**Generated Code**")
-				st.code(code_text, language="python")
-			setattr(st.session_state, code_shown_key, True)
+				with code_placeholder.container():
+					st.markdown("**Generated Code**")
+					expanded_key = f"code_expanded_{job_id}"
+					expanded = bool(st.session_state.get(expanded_key, False))
+					if not expanded:
+						if st.button("Show full code", key=f"expand_code_{job_id}"):
+							st.session_state[expanded_key] = True
+						preview_lines = 30
+						lines = code_text.splitlines()
+						preview = "\n".join(lines[:preview_lines])
+						if len(lines) > preview_lines:
+							preview += "\n# ... (truncated)"
+						st.code(preview, language="python")
+					else:
+						if st.button("Show less", key=f"collapse_code_{job_id}"):
+							st.session_state[expanded_key] = False
+						st.code(code_text, language="python")
 
 		# Loss curve (if available)
 		losses_csv = poll_text(job_id, "losses.csv") or poll_text(job_id, "loss.csv")
@@ -150,21 +163,29 @@ else:
 				if {"step", "train_loss"}.issubset(df.columns):
 					with col2:
 						with chart_placeholder.container():
-							st.markdown("**Training/Validation Loss**")
 							plot_df = df[["step", "train_loss"]].copy()
 							plot_df = cast(pd.DataFrame, plot_df).rename(columns={"train_loss": "Train Loss"})
 							if "val_loss" in df.columns:
 								plot_df["Val Loss"] = df["val_loss"]
 							plot_df = plot_df.set_index("step")
-							st.line_chart(plot_df)
 
-						# Also show accuracy if available
-						if "val_accuracy" in df.columns:
-							acc_df = df.loc[:, ["step", "val_accuracy"]].copy()
-							acc_df = cast(pd.DataFrame, acc_df).rename(columns={"val_accuracy": "Validation Accuracy"})
-							acc_df = acc_df.set_index("step")
-							st.markdown("**Validation Accuracy**")
-							st.line_chart(acc_df)
+							acc_df = None
+							if "val_accuracy" in df.columns:
+								acc_df = df.loc[:, ["step", "val_accuracy"]].copy()
+								acc_df = cast(pd.DataFrame, acc_df).rename(columns={"val_accuracy": "Validation Accuracy"})
+								acc_df = acc_df.set_index("step")
+
+							if acc_df is not None:
+								loss_tab, acc_tab = st.tabs(["Loss", "Accuracy"])
+								with loss_tab:
+									st.markdown("**Training/Validation Loss**")
+									st.line_chart(plot_df)
+								with acc_tab:
+									st.markdown("**Validation Accuracy**")
+									st.line_chart(acc_df)
+							else:
+								st.markdown("**Training/Validation Loss**")
+								st.line_chart(plot_df)
 			except Exception:
 				pass
 
