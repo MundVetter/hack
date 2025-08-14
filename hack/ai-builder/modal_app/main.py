@@ -206,7 +206,7 @@ Use this information to create appropriate data loaders, preprocessing, and mode
 
 
 @app.function(image=ml_image, volumes={MODELS_DIR: volume}, timeout=120, gpu="H200")
-def predict_internal(job_or_slug: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def predict_internal(job_or_slug: str= "job-1755178202", payload: Dict[str, Any] = {"text": "i hate this movie"}) -> Dict[str, Any]:
     """Load a saved local HF model and run inference using transformers pipelines.
 
     job_or_slug: job id or slug
@@ -238,6 +238,7 @@ def predict_internal(job_or_slug: str, payload: Dict[str, Any]) -> Dict[str, Any
             pass
 
     inputs: _Any = payload.get("text") or payload.get("inputs")
+    print("inputssssaa", inputs)
 
     # Fallback to pixels (image) if provided
     if inputs is None and payload.get("pixels") is not None:

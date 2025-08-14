@@ -109,8 +109,8 @@ with col1:
 	infer_result = None
 	if infer_btn:
 		try:
-			predict_fn = modal.Function.lookup("ai-builder", "predict")
-			infer_result = predict_fn.remote({"jobId": job_id, "text": user_input})
+			predict_fn = modal.Function.lookup("ai-builder", "predict_internal")
+			infer_result = predict_fn.remote(job_id, {"text": user_input})
 		except Exception as e:
 			infer_result = {"error": str(e)}
 		infer_placeholder.json(infer_result if infer_result is not None else {})
