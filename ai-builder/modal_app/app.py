@@ -13,14 +13,13 @@ APP_NAME = "ai-builder"
 VOLUME_NAME = "ai-builder-models"
 MODELS_DIR = "/models"
 
-image = (
-    modal.Image.debian_slim()
-    .pip_install_from_requirements("modal_app/requirements.txt")
+image = modal.Image.debian_slim().pip_install_from_requirements(
+    "modal_app/requirements.txt"
 )
 
 app = modal.App(APP_NAME)
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
-openai_secret = modal.Secret.from_name("openai")
+openai_secret = modal.Secret.from_name("openai-secret")
 
 
 def _slugify(text: str) -> str:
@@ -46,59 +45,79 @@ def _find_job_id_for_slug(slug: str) -> Optional[str]:
 
 ml_image = modal.Image.debian_slim().pip_install(["torch", "torchvision", "numpy", "matplotlib", "seaborn", "transformers", "datasets", "scikit-learn", "pandas", "tqdm"])
 
-@app.function(image=ml_image, volumes={MODELS_DIR: volume}, timeout=60 * 60, secrets=[openai_secret])
-def train(job_id: str, prompt: str) -> Dict[str, Any]:
+sandbox_app = modal.App.lookup("sandbox-train", create_if_missing=True)
+@app.function(
+    image=image, volumes={MODELS_DIR: volume}, timeout=60 * 60, secrets=[openai_secret]
+)
+async def train(
+    job_id: str = "123", prompt: str = "create a classifier for mnist"
+) -> Dict[str, Any]:
     import openai
+
     client = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
 
-    response = client.chat.completions.create(
+    response = client.responses.create(
         model="gpt-5",
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "You are an expert machine learning engineer and scientist. "
-                    "Given a user prompt describing a machine learning problem, "
-                    "write Python code that creates a complete ML solution using only the following packages: "
-                    "PyTorch, torch.nn, torch.optim, torch.utils.data, numpy, matplotlib, seaborn, "
-                    "transformers, datasets, scikit-learn, pandas, tqdm, json, os, time, random, "
-                    "and built-in Python libraries. "
-                    "CUDA is available on device 'cuda:0' with an NVIDIA A100 GPU. "
-                    "The code should train a model to solve the user's problem, "
-                    f"save the trained model weights to {MODELS_DIR}/{job_id}/model.pt, "
-                    "PRINT THE RESULTS OF THE MODEL'S TEST PERFORMANCE TO STDOUT. "
-                    "The code should be executable from a main block and print the to stdout. "
-                    "Do not use any packages other except for standard Python libraries. "
-                    "Do not include explanations, only the code."
-                    "THE CODE SHOULD WORK WITHOUT MODIFICATIONS."
-                    "Include proper error handling, logging, and validation. "
-                    "Use best practices: set random seeds for reproducibility, implement early stopping, "
-                    "use learning rate scheduling, and include model checkpointing. "
-                    "Ensure the code handles both training and evaluation phases properly. "
-                    "The model should be saved in a way that it can be loaded and used for inference later."
-                    "OUTPUT ONLY THE CODE. DO NOT INCLUDE ANY EXPLANATIONS, COMMENTS, OR ANYTHING ELSE."
-                )
-            },
-            {"role": "user", "content": prompt}
-        ]
+        instructions=f"""
+# You are an expert machine learning engineer and scientist.
+# Given a user prompt describing a machine learning problem,
+# write Python code that creates a complete ML solution using only the following packages:
+# PyTorch, torch.nn, torch.optim, torch.utils.data, numpy, matplotlib, seaborn,
+# transformers, datasets, scikit-learn, pandas, tqdm, json, os, time, random,
+# and built-in Python libraries.
+# CUDA is available on device 'cuda:0' with an NVIDIA A100 GPU.
+# The code should train a model to solve the user's problem,
+# save the trained model weights to {MODELS_DIR}/{job_id}/model.pt,
+# PRINT THE RESULTS OF THE MODEL'S TEST PERFORMANCE TO STDOUT.
+# The code should be executable from a main block and print to stdout.
+# Do not use any packages other except for standard Python libraries.
+# Do not include explanations, only the code.
+# THE CODE SHOULD WORK WITHOUT MODIFICATIONS.
+# Include proper error handling, logging, and validation.
+# Use best practices: set random seeds for reproducibility and use a validation set.
+# Ensure the code handles both training and evaluation phases properly.
+# The model should be saved in a way that it can be loaded and used for inference later.
+# OUTPUT ONLY THE CODE. DO NOT INCLUDE ANY EXPLANATIONS, COMMENTS, OR ANYTHING ELSE.
+# """,
+        input=prompt,
+        reasoning={
+            "effort": "medium"
+        }
     )
+    output = response.output_text
+#     # print("reasoning:")
+#     # print(response.reasoning_content)
 
+#     print(output)
     with open(f"{MODELS_DIR}/{job_id}/code.py", "w") as f:
-        f.write(response.choices[0].message.content)
-    print("Code written to", f"{MODELS_DIR}/{job_id}/code.py")
+        f.write(output)
+#     print("Code written to", f"{MODELS_DIR}/{job_id}/code.py")
+    # with open(f"{MODELS_DIR}/{job_id}/code.py", "r") as f:
+    #     output = f.read()
 
-    # now we execute the code in a sandboxed environment
-    sb = modal.Sandbox.create(app=app, image=ml_image, volumes={MODELS_DIR: volume}, gpu="A100")
-    p = sb.exec("python", f"{MODELS_DIR}/{job_id}/code.py")
-    for line in p.stdout:
-        print(line, end="")
-    sb.terminate()
-    
+    with modal.enable_output():
+        # now we execute the code in a sandboxed environment
+        sb = modal.Sandbox.create(
+            app=sandbox_app, image=ml_image, volumes={MODELS_DIR: volume}, gpu="A100", verbose=True
+        )
+        p = await sb.exec.aio("python", "-c", f"{output}")
+        async for line in p.stdout:
+            # Avoid double newlines by using end="".
+            print("stdout: ", line, end="")
+
+        async for line in p.stderr:
+            print("stderr: ", line,  end="")
+            
+        await p.wait.aio()
+        # sb.terminate()
+
     return {"status": "completed", "jobId": job_id}
 
 
 @app.function(image=image, volumes={MODELS_DIR: volume}, secrets=[openai_secret])
-def predict_internal(job_or_slug: str, pixels: Optional[list[float]] = None) -> Dict[str, Any]:
+def predict_internal(
+    job_or_slug: str, pixels: Optional[list[float]] = None
+) -> Dict[str, Any]:
     import torch
     import torch.nn as nn
 
@@ -120,13 +139,15 @@ def predict_internal(job_or_slug: str, pixels: Optional[list[float]] = None) -> 
     plan = meta.get("plan", {"model": {"layers": []}})
 
     model = _build_model_from_spec(plan, int(in_ch), int(num_classes), int(H))
-    model.load_state_dict(torch.load(os.path.join(model_dir, "model.pt"), map_location="cpu"))
+    model.load_state_dict(
+        torch.load(os.path.join(model_dir, "model.pt"), map_location="cpu")
+    )
     model.eval()
 
     if pixels is None:
         raise ValueError("pixels required for image classification demo")
 
-    x = (torch.tensor(pixels, dtype=torch.float32).view(1, int(in_ch), int(H), int(W)))
+    x = torch.tensor(pixels, dtype=torch.float32).view(1, int(in_ch), int(H), int(W))
     with torch.no_grad():
         logits = model(x)
         probs = torch.softmax(logits, dim=1).numpy().tolist()[0]
