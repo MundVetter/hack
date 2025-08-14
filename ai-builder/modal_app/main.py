@@ -91,7 +91,7 @@ Use this information to create appropriate data loaders, preprocessing, and mode
 # PyTorch, torch.nn, torch.optim, torch.utils.data, numpy, matplotlib, seaborn,
 # transformers, datasets, scikit-learn, pandas, tqdm, json, os, time, random,
 # and built-in Python libraries.
-# CUDA is available on device 'cuda:0' with an NVIDIA A100 GPU.
+# CUDA is available on device 'cuda:0' with an NVIDIA H200 GPU.
 
 # IMPORTANT: The input includes a dataset summary that provides:
 # - Dataset features and their data types
@@ -120,10 +120,11 @@ Use this information to create appropriate data loaders, preprocessing, and mode
 
 # LOGGING REQUIREMENTS:
 # - Create a CSV file at {MODELS_DIR}/{job_id}/losses.csv
-# - Log training loss, validation loss, and validation accuracy every 10 steps
+# - Log training loss, validation loss, and validation accuracy every 25 steps
 # - CSV should have columns: step, train_loss, val_loss, val_accuracy
 # - Update the CSV file after each logging interval
 # - Use pandas to write the CSV
+# - write the final metricts to a json file at {MODELS_DIR}/{job_id}/metrics.json
 
 # OUTPUT ONLY THE CODE. DO NOT INCLUDE ANY EXPLANATIONS, COMMENTS, OR ANYTHING ELSE.
 # """,
@@ -147,7 +148,7 @@ Use this information to create appropriate data loaders, preprocessing, and mode
     with modal.enable_output():
         # now we execute the code in a sandboxed environment
         sb = modal.Sandbox.create(
-            app=sandbox_app, image=ml_image, volumes={MODELS_DIR: volume}, gpu="A100", verbose=True
+            app=sandbox_app, image=ml_image, volumes={MODELS_DIR: volume}, gpu="H200", verbose=True
         )
         p = await sb.exec.aio("python", "-c", f"{output}", timeout=150)
         async for line in p.stdout:
