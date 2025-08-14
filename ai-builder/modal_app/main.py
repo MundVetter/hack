@@ -45,6 +45,10 @@ def _find_job_id_for_slug(slug: str) -> Optional[str]:
 ml_image = modal.Image.debian_slim().pip_install(["torch", "torchvision", "numpy", "matplotlib", "seaborn", "transformers", "datasets", "scikit-learn", "pandas", "tqdm"], "huggingface_hub")
 
 
+my_dict = modal.Dict.from_name("summary-cache", create_if_missing=True)
+job_results = modal.Dict.from_name("job-results", create_if_missing=True)
+
+
 sandbox_app = modal.App.lookup("sandbox-train", create_if_missing=True)
 @app.function(
     image=image, volumes={MODELS_DIR: volume}, timeout=60 * 60, secrets=[openai_secret]
@@ -63,7 +67,11 @@ async def train(
             json.dump({"status": "queued", "jobId": job_id}, f)
         volume.commit()
 
-    summary = summarize_dataset(dataset_id)
+    # cache
+    summary = my_dict.get(dataset_id)
+    if not summary:
+        summary = summarize_dataset(dataset_id)
+        my_dict.put(dataset_id, summary)
 
     # Create enhanced input that includes both the prompt and dataset summary
     enhanced_input = f"""
@@ -141,6 +149,8 @@ Use this information to create appropriate data loaders, preprocessing, and mode
 #     print(output)
     with open(f"{MODELS_DIR}/{job_id}/code.py", "w") as f:
         f.write(output)
+    job_results.put(job_id, {"code": output})
+    volume.commit()
 #     print("Code written to", f"{MODELS_DIR}/{job_id}/code.py")
     # with open(f"{MODELS_DIR}/{job_id}/code.py", "r") as f:
     #     output = f.read()
@@ -151,6 +161,7 @@ Use this information to create appropriate data loaders, preprocessing, and mode
             app=sandbox_app, image=ml_image, volumes={MODELS_DIR: volume}, gpu="H200", verbose=True
         )
         p = await sb.exec.aio("python", "-c", f"{output}", timeout=150)
+
         async for line in p.stdout:
             # Avoid double newlines by using end="".
             print("stdout: ", line, end="")
