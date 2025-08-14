@@ -14,7 +14,7 @@ VOLUME_NAME = "ai-builder-models"
 MODELS_DIR = "/models"
 image = modal.Image.debian_slim().pip_install_from_requirements(
     "./requirements.txt"
-).add_local_python_source("dataset_sumarizer")
+).pip_install(["fastapi[standard]"]).add_local_python_source("dataset_sumarizer")
 
 app = modal.App(APP_NAME)
 volume = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
@@ -55,6 +55,7 @@ ml_image = modal.Image.debian_slim().pip_install([
     "tqdm",
     "huggingface_hub",
     "Pillow",
+    "fastapi[standard]",
 ])
 
 
@@ -204,7 +205,7 @@ Use this information to create appropriate data loaders, preprocessing, and mode
 
 
 
-@app.function(image=ml_image, volumes={MODELS_DIR: volume}, timeout=120)
+@app.function(image=ml_image, volumes={MODELS_DIR: volume}, timeout=120, gpu="H200")
 def predict_internal(job_or_slug: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     """Load a saved local HF model and run inference using transformers pipelines.
 
