@@ -134,6 +134,14 @@ while True:
 						plot_df["Val Loss"] = df["val_loss"]
 					plot_df = plot_df.set_index("step")
 					st.line_chart(plot_df)
+
+					# Also show accuracy if available
+					if "val_accuracy" in df.columns:
+						acc_df = df[["step", "val_accuracy"]].copy()
+						acc_df = acc_df.rename(columns={"val_accuracy": "Validation Accuracy"})
+						acc_df = acc_df.set_index("step")
+						st.markdown("**Validation Accuracy**")
+						st.line_chart(acc_df)
 		except Exception:
 			pass
 
