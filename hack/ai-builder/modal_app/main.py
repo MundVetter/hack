@@ -68,12 +68,9 @@ sandbox_app = modal.App.lookup("sandbox-train", create_if_missing=True)
     image=image, volumes={MODELS_DIR: volume}, timeout=60 * 60, secrets=[openai_secret]
 )
 async def train(
-    job_id: str = "123", prompt: str = "create a sentiment classifier for imdb dataset", dataset_id: str = "imdb"
+    job_id: str = "123", code: str = "print('hello')"
 ) -> Dict[str, Any]:
-    import openai
-    from dataset_sumarizer import summarize_dataset
-
-    client = openai.OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    """Execute the generated code in a sandboxed environment."""
     
     if not os.path.exists(f"{MODELS_DIR}/{job_id}"):
         os.makedirs(f"{MODELS_DIR}/{job_id}", exist_ok=True)
@@ -81,114 +78,12 @@ async def train(
             json.dump({"status": "queued", "jobId": job_id}, f)
         volume.commit()
 
-    # cache
-    summary = my_dict.get(dataset_id)
-    if not summary:
-        summary = summarize_dataset(dataset_id)
-        my_dict.put(dataset_id, summary)
-
-    # Create enhanced input that includes both the prompt and dataset summary
-    enhanced_input = f"""
-USER PROMPT:
-{prompt}
-
-DATASET SUMMARY:
-{json.dumps(summary, indent=2)}
-
-Please use the dataset summary above to understand the data structure, features, and available splits. The summary includes:
-- Dataset features and their types
-- Available splits (train, test, validation) with example counts
-- Sample data examples
-- Dataset metadata and task information
-
-Use this information to create appropriate data loaders, preprocessing, and model architecture.
-"""
-
-    response = client.responses.create(
-        model="gpt-5",
-        instructions=f"""
-# You are an expert machine learning engineer and scientist.
-# Given a user prompt describing a machine learning problem AND a dataset summary,
-# write Python code that creates a complete ML solution using only the following packages:
-# PyTorch, torch.nn, torch.optim, torch.utils.data, numpy, matplotlib, seaborn,
-# transformers, datasets, scikit-learn, pandas, tqdm, json, os, time, random,
-# and built-in Python libraries.
-# CUDA is available on device 'cuda:0' with an NVIDIA H200 GPU.
-
-# IMPORTANT: The input includes a dataset summary that provides:
-# - Dataset features and their data types
-# - Available splits (train, test, validation) with example counts
-# - Sample data examples showing the structure
-# - Dataset metadata and task information
-# Use this summary to create appropriate data loaders, preprocessing, and model architecture.
-
-# CRITICAL CONSTRAINTS:
-# - Training must complete within 2 minutes (120 seconds)
-# - Use small model architectures and limited epochs/steps
-# - For large datasets, use only a subset of data
-# - Use early stopping to prevent overfitting
-# - Limit batch size and model complexity
-
-# The code should train a model to solve the user's problem,
-# save the trained model weights to {MODELS_DIR}/{job_id}/model.pt,
-# The code should be executable from a main block and should run as a script.
-# Do not use any packages other except for standard Python libraries.
-# Do not include explanations, only the code.
-# THE CODE SHOULD WORK WITHOUT MODIFICATIONS.
-# Include proper error handling, logging, and validation.
-# Use best practices: set random seeds for reproducibility and use a validation set.
-# Ensure the code handles both training and evaluation phases properly.
-# The model should be saved in a way that it can be loaded and used for inference later.
-
-# LOGGING REQUIREMENTS:
-# - Create a CSV file at {MODELS_DIR}/{job_id}/losses.csv
-# - Log training loss, validation loss, and validation accuracy every 25 steps
-# - CSV should have columns: step, train_loss, val_loss, val_accuracy
-# - Update the CSV file after each logging interval
-# - Use pandas to write the CSV
-# - write the final metricts to a json file at {MODELS_DIR}/{job_id}/metrics.json
-
-# INFERENCE AND ARTIFACT REQUIREMENTS (IMPORTANT):
-# - If using Hugging Face Transformers, also save both the model and tokenizer using save_pretrained
-#   into the directory {MODELS_DIR}/{job_id}/hf_model (create it if needed).
-#   Example:
-#       model.save_pretrained(f"{MODELS_DIR}/{job_id}/hf_model")
-#       tokenizer.save_pretrained(f"{MODELS_DIR}/{job_id}/hf_model")
-# - Write a metadata file at {MODELS_DIR}/{job_id}/meta.json containing at least:
-#     {{
-#       "jobId": "{job_id}",
-#       "task": "text-classification"  # or one of: text-generation, token-classification, summarization, translation, image-classification
-#     }}
-#   Set the correct task string for the model you trained.
-# - Ensure that the code runs end-to-end within 120 seconds and writes all artifacts.
-
-# OUTPUT ONLY THE CODE. DO NOT INCLUDE ANY EXPLANATIONS, COMMENTS, OR ANYTHING ELSE.
-# """,
-        input=enhanced_input,
-        reasoning={
-            "effort": "medium"
-        }
-    )
-
-    output = response.output_text
-#     # print("reasoning:")
-#     # print(response.reasoning_content)
-
-#     print(output)
-    with open(f"{MODELS_DIR}/{job_id}/code.py", "w") as f:
-        f.write(output)
-    job_results.put(job_id, {"code": output})
-    volume.commit()
-#     print("Code written to", f"{MODELS_DIR}/{job_id}/code.py")
-    # with open(f"{MODELS_DIR}/{job_id}/code.py", "r") as f:
-    #     output = f.read()
-
     with modal.enable_output():
-        # now we execute the code in a sandboxed environment
+        # Execute the generated code in a sandboxed environment
         sb = modal.Sandbox.create(
             app=sandbox_app, image=ml_image, volumes={MODELS_DIR: volume}, gpu="H200", verbose=True, name=job_id
         )
-        p = await sb.exec.aio("python", "-c", f"{output}", timeout=150)
+        p = await sb.exec.aio("python", "-c", f"{code}", timeout=150)
 
         async for line in p.stdout:
             # Avoid double newlines by using end="".
@@ -198,11 +93,26 @@ Use this information to create appropriate data loaders, preprocessing, and mode
             print("stderr: ", line,  end="")
             
         await p.wait.aio()
-        # sb.terminate()
 
     return {"status": "completed", "jobId": job_id}
 
 
+# @app.function(image=ml_image, volumes={MODELS_DIR: volume}, timeout=120, gpu="H200")
+# def (job_or_slug: str= "job-1755178202", payload: Dict[str, Any] = {"text": "i hate this movie"}) -> Dict[str, Any]:
+#     """Load a saved local HF model and run inference using transformers pipelines.
+#     """
+
+@app.function(image=image, volumes={MODELS_DIR: volume}, timeout=120)
+def create_dataset_summary(dataset_id: str) -> Dict[str, Any]:
+    """Load a saved local HF model and run inference using transformers pipelines.
+    """
+    from dataset_sumarizer import summarize_dataset
+        # cache
+    summary = my_dict.get(dataset_id)
+    if not summary:
+        summary = summarize_dataset(dataset_id)
+        my_dict.put(dataset_id, summary)
+    return summary
 
 
 @app.function(image=ml_image, volumes={MODELS_DIR: volume}, timeout=120, gpu="H200")
@@ -210,7 +120,7 @@ def predict_internal(job_or_slug: str= "job-1755178202", payload: Dict[str, Any]
     """Load a saved local HF model and run inference using transformers pipelines.
 
     job_or_slug: job id or slug
-    payload: expects one of keys {"text", "inputs", "pixels", "image_base64"}
+    payload: expects one of keys {"text", "inputs", "pixels", "image_base64", "audio_base64"}
     """
     import json as _json
     from typing import Any as _Any
@@ -227,7 +137,30 @@ def predict_internal(job_or_slug: str= "job-1755178202", payload: Dict[str, Any]
     model_dir = f"{MODELS_DIR}/{job_id}/hf_model"
     meta_path = f"{MODELS_DIR}/{job_id}/meta.json"
 
+    # Default task based on input type
     task = "text-classification"
+    inputs: _Any = None
+    
+    # Check for text inputs first
+    if payload.get("text") is not None or payload.get("inputs") is not None:
+        inputs = payload.get("text") or payload.get("inputs")
+        task = "text-classification"
+    
+    # Check for image inputs
+    elif payload.get("pixels") is not None:
+        inputs = payload.get("pixels")
+        task = "image-classification"
+    
+    elif payload.get("image_base64") is not None:
+        inputs = payload.get("image_base64")
+        task = "image-classification"
+    
+    # Check for audio inputs
+    elif payload.get("audio_base64") is not None:
+        inputs = payload.get("audio_base64")
+        task = "automatic-speech-recognition"  # Use valid transformers task
+    
+    # Override task from metadata if available
     if _os.path.exists(meta_path):
         try:
             with open(meta_path, "r") as mf:
@@ -237,23 +170,21 @@ def predict_internal(job_or_slug: str= "job-1755178202", payload: Dict[str, Any]
         except Exception:
             pass
 
-    inputs: _Any = payload.get("text") or payload.get("inputs")
-    print("inputssssaa", inputs)
-
-    # Fallback to pixels (image) if provided
-    if inputs is None and payload.get("pixels") is not None:
-        task = "image-classification"
-        inputs = payload.get("pixels")
-
-    if inputs is None and payload.get("image_base64") is not None:
-        task = "image-classification"
-        inputs = payload.get("image_base64")
-
     if inputs is None:
         return {"error": "Missing inputs"}
 
-    # Build pipeline
-    nlp = pipeline(task, model=model_dir, tokenizer=model_dir) if task != "image-classification" else pipeline(task, model=model_dir)
+    print(f"Running inference with task: {task}, inputs type: {type(inputs)}")
+
+    # Build pipeline based on task
+    try:
+        if task in ["image-classification", "automatic-speech-recognition"]:
+            # Non-text tasks that don't need tokenizer
+            nlp = pipeline(task, model=model_dir)  # type: ignore
+        else:
+            # Text-based tasks
+            nlp = pipeline(task, model=model_dir, tokenizer=model_dir)  # type: ignore
+    except Exception as e:
+        return {"error": f"Failed to create pipeline: {e}"}
 
     try:
         result = nlp(inputs)
@@ -303,10 +234,11 @@ def predict(request: Dict[str, Any]):
     text = (request or {}).get("text") or (request or {}).get("inputs")
     pixels = (request or {}).get("pixels")
     image_base64 = (request or {}).get("image_base64")
+    audio_base64 = (request or {}).get("audio_base64")
     if not slug:
         return {"error": "Missing slug"}, 400
-    if text is None and pixels is None and image_base64 is None:
-        return {"error": "Missing inputs (provide 'text', 'inputs', 'pixels', or 'image_base64')"}, 400
+    if text is None and pixels is None and image_base64 is None and audio_base64 is None:
+        return {"error": "Missing inputs (provide 'text', 'inputs', 'pixels', 'image_base64', or 'audio_base64')"}, 400
     payload: Dict[str, Any] = {}
     if text is not None:
         payload["text"] = text
@@ -314,5 +246,7 @@ def predict(request: Dict[str, Any]):
         payload["pixels"] = pixels
     if image_base64 is not None:
         payload["image_base64"] = image_base64
+    if audio_base64 is not None:
+        payload["audio_base64"] = audio_base64
     out = predict_internal.remote(slug, payload)
     return out
