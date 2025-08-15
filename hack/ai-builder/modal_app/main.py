@@ -101,17 +101,30 @@ async def train(
 # def (job_or_slug: str= "job-1755178202", payload: Dict[str, Any] = {"text": "i hate this movie"}) -> Dict[str, Any]:
 #     """Load a saved local HF model and run inference using transformers pipelines.
 #     """
-
-@app.function(image=image, volumes={MODELS_DIR: volume}, timeout=120)
+dataset_image = modal.Image.debian_slim().pip_install([
+    "datasets",
+    "huggingface_hub",
+    "numpy",
+    "pandas",
+    "Pillow",
+])
+@app.function(image=dataset_image, volumes={MODELS_DIR: volume}, timeout=120)
 def create_dataset_summary(dataset_id: str) -> Dict[str, Any]:
-    """Load a saved local HF model and run inference using transformers pipelines.
+    """
+    Create a dataset summary with versioning to ensure we fetch using the latest tech.
     """
     from dataset_sumarizer import summarize_dataset
-        # cache
-    summary = my_dict.get(dataset_id)
+
+    SUMMARY_VERSION = "v2"  # Increment this when summary logic/tech changes
+    cache_key = f"{dataset_id}::summary::{SUMMARY_VERSION}"
+
+    summary = my_dict.get(cache_key)
     if not summary:
         summary = summarize_dataset(dataset_id)
-        my_dict.put(dataset_id, summary)
+        # Attach version to summary for traceability
+        if isinstance(summary, dict):
+            summary["summary_version"] = SUMMARY_VERSION
+        my_dict.put(cache_key, summary)
     return summary
 
 
