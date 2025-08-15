@@ -175,7 +175,7 @@ def summarize_dataset(repo: str, config: Optional[str] = None, max_example_chars
                 streaming=True,
             )
             first = next(iter(ds))
-            example = {k: _truncate(v, max_example_chars) for k, v in first.items()}
+            example = {k: _truncate(str(v), max_example_chars) for k, v in first.items()}
         except Exception:
             example = None
 
